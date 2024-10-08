@@ -171,21 +171,45 @@ def plot_results(random_x, bayes_x, tpe_x, random_regrets, bayes_regrets, tpe_re
     plt.savefig("contour_plot.png", dpi=300)
     plt.show()
 
-    # Pareto Front plot
-    all_x = torch.cat([random_x, bayes_x, tpe_x], dim=0)
-    all_y = torch.cat([problem(random_x), problem(bayes_x), problem(tpe_x)], dim=0)
+    # Pareto Front plots for each method separately
 
-    pareto_mask = compute_pareto_front(all_y.unsqueeze(-1))
-    pareto_points = all_x[pareto_mask]
-
+    # Pareto Front for Random Sampling
+    pareto_mask_random = compute_pareto_front(random_y.unsqueeze(-1))
+    pareto_points_random = random_x[pareto_mask_random]
     plt.figure(figsize=(8, 6))
-    plt.scatter(all_x[:, 0].numpy(), all_x[:, 1].numpy(), label='All points', color='gray')
-    plt.scatter(pareto_points[:, 0].numpy(), pareto_points[:, 1].numpy(), color='red', label='Pareto Front')
+    plt.scatter(random_x[:, 0].numpy(), random_x[:, 1].numpy(), label='Random Sampling Points', color='gray')
+    plt.scatter(pareto_points_random[:, 0].numpy(), pareto_points_random[:, 1].numpy(), color='red', label='Pareto Front')
     plt.xlabel('x1')
     plt.ylabel('x2')
-    plt.title('Pareto Front')
+    plt.title('Pareto Front (Random Sampling)')
     plt.legend()
-    plt.savefig("pareto_front.png", dpi=300)
+    plt.savefig("pareto_front_random_sampling.png", dpi=300)
+    plt.show()
+
+    # Pareto Front for Bayesian Optimization
+    pareto_mask_bayes = compute_pareto_front(bayes_y.unsqueeze(-1))
+    pareto_points_bayes = bayes_x[pareto_mask_bayes]
+    plt.figure(figsize=(8, 6))
+    plt.scatter(bayes_x[:, 0].numpy(), bayes_x[:, 1].numpy(), label='Bayesian Optimization Points', color='gray')
+    plt.scatter(pareto_points_bayes[:, 0].numpy(), pareto_points_bayes[:, 1].numpy(), color='blue', label='Pareto Front')
+    plt.xlabel('x1')
+    plt.ylabel('x2')
+    plt.title('Pareto Front (Bayesian Optimization)')
+    plt.legend()
+    plt.savefig("pareto_front_bayesian_optimization.png", dpi=300)
+    plt.show()
+
+    # Pareto Front for TPE Optimization
+    pareto_mask_tpe = compute_pareto_front(tpe_y.unsqueeze(-1))
+    pareto_points_tpe = tpe_x[pareto_mask_tpe]
+    plt.figure(figsize=(8, 6))
+    plt.scatter(tpe_x[:, 0].numpy(), tpe_x[:, 1].numpy(), label='TPE Optimization Points', color='gray')
+    plt.scatter(pareto_points_tpe[:, 0].numpy(), pareto_points_tpe[:, 1].numpy(), color='green', label='Pareto Front')
+    plt.xlabel('x1')
+    plt.ylabel('x2')
+    plt.title('Pareto Front (TPE Optimization)')
+    plt.legend()
+    plt.savefig("pareto_front_tpe_optimization.png", dpi=300)
     plt.show()
 
 def main():
