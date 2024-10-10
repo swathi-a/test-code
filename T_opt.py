@@ -1,183 +1,170 @@
 import numpy as np
-import torch
-import optuna
 import matplotlib.pyplot as plt
+import optuna
+import torch
 from botorch.models import SingleTaskGP
 from botorch.fit import fit_gpytorch_model
 from botorch.acquisition import UpperConfidenceBound
+from botorch.mlls import ExactMarginalLogLikelihood
 from botorch.optim import optimize_acqf
-from botorch.models.transforms import Standardize
-from gpytorch.mlls import ExactMarginalLogLikelihood
-from scipy.optimize import branin
-import traceback
+from botorch.test_functions import Branin
 
-# Define the known Branin global minimum and value
-optimal_value = 0.397887
-optimal_point = np.array([np.pi, 2.275])
-
-# Branin function
-def branin_function(x1, x2):
-    return branin(x1, x2)
+# Define the Branin function
+problem = Branin(negate=True)  # Negate to treat as minimization problem
+bounds = torch.tensor([[-5.0, 0.0], [10.0, 15.0]])  # Bounds for x1 and x2
+optimal_value = 0.397887  # Known global minimum of the Branin function
+optimal_point = torch.tensor([9.42478, 2.475])  # Optimal point for Branin function
 
 # TPE Optimization using Optuna
-def tpe_optimization(n_trials=50):
-    try:
-        def objective(trial):
-            x1 = trial.suggest_uniform('x1', -5.0, 10.0)
-            x2 = trial.suggest_uniform('x2', 0.0, 15.0)
-            y = branin_function(x1, x2)
-            return y
+def tpe_optimization(n_trials=20):
+    regrets = []  # Track regret at each iteration
+    cumulative_regrets = []  # Track cumulative regret
 
-        study = optuna.create_study(direction='minimize', sampler=optuna.samplers.TPESampler())
-        study.optimize(objective, n_trials=n_trials)
+    def objective(trial):
+        x1 = trial.suggest_uniform('x1', bounds[0, 0].item(), bounds[1, 0].item())
+        x2 = trial.suggest_uniform('x2', bounds[0, 1].item(), bounds[1, 1].item())
+        value = problem(torch.tensor([x1, x2])).item()
 
-        # Gather the samples and values
-        x1_samples = np.array([trial.params['x1'] for trial in study.trials])
-        x2_samples = np.array([trial.params['x2'] for trial in study.trials])
-        X_samples = np.vstack((x1_samples, x2_samples)).T
-        y_samples = np.array([trial.value for trial in study.trials])
+        # Regret calculation
+        best_value_so_far = min([optimal_value] + [trial.value for trial in trial.study.trials])
+        regret = best_value_so_far - optimal_value
+        regrets.append(regret)
+        cumulative_regrets.append(np.sum(regrets))
 
-        return X_samples, y_samples, study
-    except Exception as e:
-        print(f"Error during TPE optimization: {e}")
-        traceback.print_exc()
-        return np.empty((0, 2)), np.empty(0)
+        return value
 
-# Fit Gaussian Process model using BoTorch
-def fit_gp_model(X_samples, y_samples):
-    try:
-        # Convert data to tensors
-        X_train = torch.tensor(X_samples, dtype=torch.float32)
-        y_train = torch.tensor(y_samples.reshape(-1, 1), dtype=torch.float32)
+    study = optuna.create_study(direction='minimize')
+    study.optimize(objective, n_trials=n_trials)
 
-        # Define and fit GP model
-        model = SingleTaskGP(X_train, y_train, outcome_transform=Standardize(m=1))
-        mll = ExactMarginalLogLikelihood(model.likelihood, model)
-        fit_gpytorch_model(mll)
+    X_samples = np.array([[trial.params['x1'], trial.params['x2']] for trial in study.trials])
+    y_samples = np.array([trial.value for trial in study.trials])
 
-        return model
-    except Exception as e:
-        print(f"Error during GP model fitting: {e}")
-        traceback.print_exc()
-        return None
+    return X_samples, y_samples, study, regrets, cumulative_regrets
+
+# Fit SingleTaskGP using BoTorch and GPyTorch
+def fit_gp_model(train_x, train_y):
+    # Convert to torch tensors
+    train_x = torch.tensor(train_x, dtype=torch.float32)
+    train_y = torch.tensor(train_y, dtype=torch.float32).unsqueeze(-1)
+
+    # Define the GP model
+    model = SingleTaskGP(train_x, train_y)
+
+    # Define the Marginal Log Likelihood (MLL)
+    mll = ExactMarginalLogLikelihood(model.likelihood, model)
+
+    # Fit the model by maximizing the MLL
+    fit_gpytorch_model(mll)
+
+    return model
 
 # Plot the true Branin function
-def plot_branin_function(bounds):
-    x1_range = np.linspace(bounds[0][0], bounds[0][1], 100)
-    x2_range = np.linspace(bounds[1][0], bounds[1][1], 100)
-    X1, X2 = np.meshgrid(x1_range, x2_range)
-    Z = branin_function(X1, X2)
-    
+def plot_branin_function():
+    x1_range = torch.linspace(bounds[0, 0].item(), bounds[1, 0].item(), 100)
+    x2_range = torch.linspace(bounds[0, 1].item(), bounds[1, 1].item(), 100)
+    X1, X2 = torch.meshgrid(x1_range, x2_range)
+    X_grid = torch.cat([X1.reshape(-1, 1), X2.reshape(-1, 1)], dim=1)
+    Z = problem(X_grid).reshape(X1.shape).detach().numpy()
+
     plt.figure(figsize=(8, 6))
-    cp = plt.contourf(X1, X2, Z, levels=50, cmap='viridis')
+    cp = plt.contourf(X1.numpy(), X2.numpy(), Z, levels=50, cmap='viridis')
     plt.colorbar(cp, label='Branin function value')
     plt.title('True Branin Function')
     plt.xlabel('x1')
     plt.ylabel('x2')
     plt.show()
 
-# Plot estimated mean and variance using GP model
-def plot_estimated_mean_variance(gp_model, bounds):
-    # Create a grid for prediction
-    x1_range = np.linspace(bounds[0][0], bounds[0][1], 100)
-    x2_range = np.linspace(bounds[1][0], bounds[1][1], 100)
-    X1, X2 = np.meshgrid(x1_range, x2_range)
-    X_grid = np.vstack([X1.ravel(), X2.ravel()]).T
-    X_grid_tensor = torch.tensor(X_grid, dtype=torch.float32)
+# Plot estimated mean and variance using BoTorch GP model
+def plot_estimated_mean_variance(model):
+    model.eval()
 
-    # Predict the mean and variance
-    y_mean, y_var = gp_model.posterior(X_grid_tensor).mean.detach().numpy(), gp_model.posterior(X_grid_tensor).variance.detach().numpy()
-    y_mean = y_mean.reshape(X1.shape)
-    y_var = y_var.reshape(X1.shape)
+    x1_range = torch.linspace(bounds[0, 0].item(), bounds[1, 0].item(), 100)
+    x2_range = torch.linspace(bounds[0, 1].item(), bounds[1, 1].item(), 100)
+    X1, X2 = torch.meshgrid(x1_range, x2_range)
+    X_grid = torch.cat([X1.reshape(-1, 1), X2.reshape(-1, 1)], dim=1)
 
-    # Plot the mean
+    with torch.no_grad():
+        posterior = model.posterior(X_grid)
+        mean = posterior.mean.squeeze(-1).reshape(X1.shape).numpy()
+        variance = posterior.variance.squeeze(-1).reshape(X1.shape).numpy()
+
+    # Plot GP mean
     plt.figure(figsize=(8, 6))
-    cp = plt.contourf(X1, X2, y_mean, levels=50, cmap='coolwarm')
-    plt.colorbar(cp, label='Estimated Mean')
-    plt.title('Estimated Mean from GP')
-    plt.xlabel('x1')
-    plt.ylabel('x2')
+    cp = plt.contourf(X1.numpy(), X2.numpy(), mean, levels=50, cmap='viridis')
+    plt.colorbar(cp, label='Posterior Mean')
+    plt.title('BoTorch GP Posterior Mean')
     plt.show()
 
-    # Plot the variance
+    # Plot GP variance
     plt.figure(figsize=(8, 6))
-    cp = plt.contourf(X1, X2, y_var, levels=50, cmap='plasma')
-    plt.colorbar(cp, label='Estimated Variance')
-    plt.title('Estimated Variance from GP')
-    plt.xlabel('x1')
-    plt.ylabel('x2')
+    cp = plt.contourf(X1.numpy(), X2.numpy(), variance, levels=50, cmap='viridis')
+    plt.colorbar(cp, label='Posterior Variance')
+    plt.title('BoTorch GP Posterior Variance')
     plt.show()
-
-# Calculate regret and cumulative regret
-def calculate_regret(y_samples, optimal_value):
-    regrets = y_samples - optimal_value
-    cumulative_regret = np.cumsum(regrets)
-    return regrets, cumulative_regret
 
 # Plot regret and cumulative regret
-def plot_regret(regrets, cumulative_regret):
-    plt.figure(figsize=(8, 6))
-    plt.plot(regrets, label="Regret")
-    plt.xlabel("Iteration")
-    plt.ylabel("Regret")
-    plt.title("Regret Over Iterations")
+def plot_regret_cumulative_regret(regrets, cumulative_regrets):
+    plt.figure(figsize=(12, 6))
+    
+    plt.subplot(1, 2, 1)
+    plt.plot(regrets, label='Regret', color='blue')
+    plt.xlabel('Iteration')
+    plt.ylabel('Regret')
     plt.legend()
+
+    plt.subplot(1, 2, 2)
+    plt.plot(cumulative_regrets, label='Cumulative Regret', color='red')
+    plt.xlabel('Iteration')
+    plt.ylabel('Cumulative Regret')
+    plt.legend()
+
+    plt.tight_layout()
     plt.show()
 
-    plt.figure(figsize=(8, 6))
-    plt.plot(cumulative_regret, label="Cumulative Regret", color="orange")
-    plt.xlabel("Iteration")
-    plt.ylabel("Cumulative Regret")
-    plt.title("Cumulative Regret Over Iterations")
-    plt.legend()
-    plt.show()
-
-# Plot contour and check proximity to the optimal point
-def plot_contour_with_samples(X_samples, bounds, optimal_point):
-    x1_range = np.linspace(bounds[0][0], bounds[0][1], 100)
-    x2_range = np.linspace(bounds[1][0], bounds[1][1], 100)
-    X1, X2 = np.meshgrid(x1_range, x2_range)
-    Z = branin_function(X1, X2)
+# Plot contour with sampled points
+def plot_contour_with_sampled_points(X_samples, optimal_point):
+    x1_range = torch.linspace(bounds[0, 0].item(), bounds[1, 0].item(), 100)
+    x2_range = torch.linspace(bounds[0, 1].item(), bounds[1, 1].item(), 100)
+    X1, X2 = torch.meshgrid(x1_range, x2_range)
+    X_grid = torch.cat([X1.reshape(-1, 1), X2.reshape(-1, 1)], dim=1)
+    Z = problem(X_grid).reshape(X1.shape).detach().numpy()
 
     plt.figure(figsize=(8, 6))
-    cp = plt.contourf(X1, X2, Z, levels=50, cmap='viridis')
+    cp = plt.contourf(X1.numpy(), X2.numpy(), Z, levels=50, cmap='viridis')
     plt.colorbar(cp, label='Branin function value')
 
-    # Plot random sampled points
-    plt.scatter(X_samples[:, 0], X_samples[:, 1], label="TPE Sampled Points", color="red", edgecolor="k")
+    # Scatter the sampled points
+    plt.scatter(X_samples[:, 0], X_samples[:, 1], color='red', edgecolor='black', label='Sampled Points')
 
-    # Highlight the optimal point
-    plt.scatter(optimal_point[0], optimal_point[1], marker="*", color="yellow", s=200, label="Optimal Point")
-    
-    plt.title("Contour Plot with TPE Sampled Points and Optimal Point")
+    # Plot the optimal point
+    plt.scatter(optimal_point[0].item(), optimal_point[1].item(), color='yellow', marker='*', s=200, label='Optimal Point')
+
+    plt.title('Contour Plot with Sampled Points and Optimal Point')
     plt.xlabel('x1')
     plt.ylabel('x2')
     plt.legend()
     plt.show()
 
-# Main function to run the optimization and plot the results
+# Main function to run TPE optimization and plot results
 def main():
-    bounds = [[-5, 10], [0, 15]]  # Bounds for x1 and x2
-    
     # Step 1: Plot the true Branin function
-    plot_branin_function(bounds)
+    plot_branin_function()
 
     # Step 2: Perform TPE optimization using Optuna
     n_trials = 50
-    X_samples, y_samples, study = tpe_optimization(n_trials=n_trials)
+    X_samples, y_samples, study, regrets, cumulative_regrets = tpe_optimization(n_trials=n_trials)
 
-    # Step 3: Fit a Gaussian Process model using BoTorch
+    # Step 3: Fit a BoTorch GP model using the TPE results
     gp_model = fit_gp_model(X_samples, y_samples)
 
-    # Step 4: Plot estimated mean and variance using the fitted GP model
-    plot_estimated_mean_variance(gp_model, bounds)
+    # Step 4: Plot estimated mean and variance using the fitted BoTorch GP model
+    plot_estimated_mean_variance(gp_model)
 
-    # Step 5: Calculate and plot regret and cumulative regret
-    regrets, cumulative_regret = calculate_regret(y_samples, optimal_value)
-    plot_regret(regrets, cumulative_regret)
+    # Step 5: Plot regret and cumulative regret
+    plot_regret_cumulative_regret(regrets, cumulative_regrets)
 
-    # Step 6: Plot contour with optimal point and sampled points
-    plot_contour_with_samples(X_samples, bounds, optimal_point)
+    # Step 6: Plot contour with sampled points and the optimal point
+    plot_contour_with_sampled_points(X_samples, optimal_point)
 
 if __name__ == "__main__":
     main()
