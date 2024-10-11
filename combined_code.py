@@ -8,7 +8,7 @@ from botorch.fit import fit_gpytorch_model
 from botorch.acquisition import UpperConfidenceBound
 from botorch.optim import optimize_acqf
 from botorch.mlls import ExactMarginalLogLikelihood
-from botorch.test_functions.branin import Branin  # Corrected import
+from botorch.test_functions.branin import Branin
 import optuna
 import os
 
@@ -43,41 +43,49 @@ def random_sampling(n_samples, bounds, optimal_value):
     
     return X_samples, y_samples, regrets, cumulative_regrets
 
-# Bayesian Optimization
+# Bayesian Optimization using BoTorch
 def bayesian_optimization(n_iter=20, n_initial_points=5):
+    # Initialize train data
     train_x = torch.rand(n_initial_points, 2) * (torch.tensor(bounds)[1] - torch.tensor(bounds)[0]) + torch.tensor(bounds)[0]
-    train_y = Branin()(train_x).unsqueeze(-1)  # Using BoTorch Branin for Bayesian Optimization
+    branin_func = Branin()
+    train_y = branin_func(train_x).unsqueeze(-1)  # Using BoTorch Branin for Bayesian Optimization
     regrets = []
 
     for i in range(n_iter):
         print(f"Bayesian Optimization - Iteration {i + 1}")
+        # Fit GP model using BoTorch
         model = SingleTaskGP(train_x, train_y)
         mll = ExactMarginalLogLikelihood(model.likelihood, model)
         fit_gpytorch_model(mll)
 
+        # Define the acquisition function
         UCB = UpperConfidenceBound(model, beta=0.1)
 
+        # Optimize the acquisition function
         candidate, _ = optimize_acqf(
             UCB,
-            bounds=torch.tensor(bounds),
+            bounds=torch.tensor(bounds).T,  # BoTorch expects bounds as a 2x2 tensor
             q=1,
             num_restarts=10,
             raw_samples=100
         )
         
+        # Evaluate the new candidate point
         new_x = candidate
-        new_y = Branin()(new_x).unsqueeze(-1)
+        new_y = branin_func(new_x).unsqueeze(-1)
 
+        # Update training data
         train_x = torch.cat([train_x, new_x], dim=0)
         train_y = torch.cat([train_y, new_y], dim=0)
 
+        # Compute regret
         best_value_so_far = train_y.min().item()
         regret = best_value_so_far - optimal_value
         regrets.append(regret)
 
     return train_x, train_y, regrets
 
-# TPE Optimization
+# TPE Optimization using Optuna
 def tpe_optimization(n_trials=20):
     regrets = []
     cumulative_regrets = []
@@ -200,21 +208,16 @@ def main():
     plot_regret_cumulative_regret(random_regrets, random_cumulative_regrets, 'Random Sampling')
     plot_contour_with_sampled_points(X_random, 'Random Sampling')
 
-    # Bayesian Optimization
-    print("Running Bayesian Optimization...")
-    train_x, train_y, bayesian_regrets = bayesian_optimization(n_iterations)
-    model_bayes = SingleTaskGP(train_x, train_y)
-    mll = ExactMarginalLogLikelihood(model_bayes.likelihood, model_bayes)
-    fit_gpytorch_model(mll)
-    plot_estimated_mean_variance(model_bayes, bounds, 'Bayesian Optimization')
+    # Bayesian Optimization using BoTorch model fitting
+    print("Running Bayesian Optimization with BoTorch...")
+    train_x, train_y, bayesian_regrets = bayesian_optimization(n_iterations)  # BoTorch Model Fitting
+    plot_estimated_mean_variance(fit_gaussian_process(train_x.numpy(), train_y.numpy()), bounds, 'Bayesian Optimization')
     plot_regret_cumulative_regret(bayesian_regrets, np.cumsum(bayesian_regrets), 'Bayesian Optimization')
     plot_contour_with_sampled_points(train_x.numpy(), 'Bayesian Optimization')
 
-    # TPE Optimization
-    print("Running TPE Optimization...")
-    X_tpe, y_tpe, tpe_regrets, tpe_cumulative_regrets = tpe_optimization(n_iterations)
-    gp_tpe = fit_gaussian_process(X_tpe, y_tpe)
-    plot_estimated_mean_variance(gp_tpe, bounds, 'TPE Optimization')
+    # TPE Optimization using Optuna fitting model
+    print("Running TPE Optimization with Optuna...")
+    X_tpe, y_tpe, tpe_regrets, tpe_cumulative_regrets = tpe_optimization(n_iterations)  # Optuna TPE Model Fitting
     plot_regret_cumulative_regret(tpe_regrets, tpe_cumulative_regrets, 'TPE Optimization')
     plot_contour_with_sampled_points(X_tpe, 'TPE Optimization')
 
