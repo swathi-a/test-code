@@ -8,10 +8,15 @@ from botorch.fit import fit_gpytorch_model
 from botorch.acquisition import UpperConfidenceBound
 from botorch.optim import optimize_acqf
 from botorch.mlls import ExactMarginalLogLikelihood
-from botorch.test_functions import Branin
+from botorch.test_functions.branin import Branin  # Corrected import
 import optuna
+import os
 
-# Define the Branin function
+# Set up the directory to save plots
+output_dir = "figures"
+os.makedirs(output_dir, exist_ok=True)
+
+# Define the Branin function for grid and random sampling
 def branin(x1, x2):
     a = 1.0
     b = 5.1 / (4.0 * np.pi ** 2)
@@ -21,8 +26,8 @@ def branin(x1, x2):
     t = 1.0 / (8.0 * np.pi)
     return a * (x2 - b * x1 ** 2 + c * x1 - r) ** 2 + s * (1 - t) * np.cos(x1) + s
 
-problem = Branin(negate=True)
-bounds = torch.tensor([[-5.0, 0.0], [10.0, 15.0]])  # Bounds for x1 and x2
+# Set bounds and optimal value for Branin
+bounds = [[-5.0, 0.0], [10.0, 15.0]]  # Bounds for x1 and x2
 optimal_value = 0.397887  # Known optimal value
 optimal_point = np.array([np.pi, 2.275])  # Approximate optimal point for Branin
 
@@ -40,8 +45,8 @@ def random_sampling(n_samples, bounds, optimal_value):
 
 # Bayesian Optimization
 def bayesian_optimization(n_iter=20, n_initial_points=5):
-    train_x = torch.rand(n_initial_points, 2) * (bounds[1] - bounds[0]) + bounds[0]
-    train_y = problem(train_x).unsqueeze(-1)
+    train_x = torch.rand(n_initial_points, 2) * (torch.tensor(bounds)[1] - torch.tensor(bounds)[0]) + torch.tensor(bounds)[0]
+    train_y = Branin()(train_x).unsqueeze(-1)  # Using BoTorch Branin for Bayesian Optimization
     regrets = []
 
     for i in range(n_iter):
@@ -54,14 +59,14 @@ def bayesian_optimization(n_iter=20, n_initial_points=5):
 
         candidate, _ = optimize_acqf(
             UCB,
-            bounds=bounds,
+            bounds=torch.tensor(bounds),
             q=1,
             num_restarts=10,
             raw_samples=100
         )
         
         new_x = candidate
-        new_y = problem(new_x).unsqueeze(-1)
+        new_y = Branin()(new_x).unsqueeze(-1)
 
         train_x = torch.cat([train_x, new_x], dim=0)
         train_y = torch.cat([train_y, new_y], dim=0)
@@ -78,9 +83,9 @@ def tpe_optimization(n_trials=20):
     cumulative_regrets = []
 
     def objective(trial):
-        x1 = trial.suggest_uniform('x1', bounds[0, 0].item(), bounds[1, 0].item())
-        x2 = trial.suggest_uniform('x2', bounds[0, 1].item(), bounds[1, 1].item())
-        value = problem(torch.tensor([x1, x2])).item()
+        x1 = trial.suggest_uniform('x1', bounds[0][0], bounds[1][0])
+        x2 = trial.suggest_uniform('x2', bounds[0][1], bounds[1][1])
+        value = branin(x1, x2)
 
         best_value_so_far = min([optimal_value] + [trial.value for trial in trial.study.trials])
         regret = best_value_so_far - optimal_value
@@ -97,33 +102,31 @@ def tpe_optimization(n_trials=20):
 
     return X_samples, y_samples, regrets, cumulative_regrets
 
-# Plot the true Branin function
+# Plot functions
 def plot_branin_function():
-    x1_range = torch.linspace(bounds[0, 0].item(), bounds[1, 0].item(), 100)
-    x2_range = torch.linspace(bounds[0, 1].item(), bounds[1, 1].item(), 100)
-    X1, X2 = torch.meshgrid(x1_range, x2_range)
-    X_grid = torch.cat([X1.reshape(-1, 1), X2.reshape(-1, 1)], dim=1)
-    Z = problem(X_grid).reshape(X1.shape).detach().numpy()
+    x1_range = np.linspace(bounds[0][0], bounds[1][0], 100)
+    x2_range = np.linspace(bounds[0][1], bounds[1][1], 100)
+    X1, X2 = np.meshgrid(x1_range, x2_range)
+    Z = np.array([branin(x1, x2) for x1, x2 in zip(X1.ravel(), X2.ravel())]).reshape(X1.shape)
 
     plt.figure(figsize=(8, 6))
-    cp = plt.contourf(X1.numpy(), X2.numpy(), Z, levels=50, cmap='viridis')
+    cp = plt.contourf(X1, X2, Z, levels=50, cmap='viridis')
     plt.colorbar(cp, label='Branin function value')
     plt.title('True Branin Function')
     plt.xlabel('x1')
     plt.ylabel('x2')
+    plt.savefig(f"{output_dir}/branin_function.png")
     plt.show()
 
-# Fit Gaussian Process for Random Sampling
 def fit_gaussian_process(X_samples, y_samples):
     kernel = C(1.0, (1e-4, 1e1)) * RBF(1.0, (1e-4, 1e1))
     gp = GaussianProcessRegressor(kernel=kernel, n_restarts_optimizer=10)
     gp.fit(X_samples, y_samples)
     return gp
 
-# Plot estimated mean and variance from GP
-def plot_estimated_mean_variance(gp, bounds):
-    x1_range = np.linspace(bounds[0, 0], bounds[1, 0], 100)
-    x2_range = np.linspace(bounds[0, 1], bounds[1, 1], 100)
+def plot_estimated_mean_variance(gp, bounds, method_name):
+    x1_range = np.linspace(bounds[0][0], bounds[1][0], 100)
+    x2_range = np.linspace(bounds[0][1], bounds[1][1], 100)
     X1, X2 = np.meshgrid(x1_range, x2_range)
     X_grid = np.vstack([X1.ravel(), X2.ravel()]).T
     y_mean, y_std = gp.predict(X_grid, return_std=True)
@@ -133,16 +136,17 @@ def plot_estimated_mean_variance(gp, bounds):
     plt.figure(figsize=(8, 6))
     cp = plt.contourf(X1, X2, y_mean, levels=50, cmap='coolwarm')
     plt.colorbar(cp, label='Estimated Mean')
-    plt.title('Estimated Mean from GP')
+    plt.title(f'Estimated Mean from GP - {method_name}')
+    plt.savefig(f"{output_dir}/estimated_mean_{method_name}.png")
     plt.show()
 
     plt.figure(figsize=(8, 6))
     cp = plt.contourf(X1, X2, y_std, levels=50, cmap='plasma')
     plt.colorbar(cp, label='Estimated Standard Deviation')
-    plt.title('Estimated Variance from GP')
+    plt.title(f'Estimated Variance from GP - {method_name}')
+    plt.savefig(f"{output_dir}/estimated_variance_{method_name}.png")
     plt.show()
 
-# Plot regret and cumulative regret
 def plot_regret_cumulative_regret(regrets, cumulative_regrets, method_name):
     plt.figure(figsize=(10, 6))
     plt.subplot(2, 1, 1)
@@ -159,14 +163,14 @@ def plot_regret_cumulative_regret(regrets, cumulative_regrets, method_name):
     plt.ylabel('Cumulative Regret')
     plt.legend()
     plt.tight_layout()
+    plt.savefig(f"{output_dir}/regret_cumulative_{method_name}.png")
     plt.show()
 
-# Plot contour with sampled points and optimal point
 def plot_contour_with_sampled_points(X_samples, method_name):
-    x1_range = np.linspace(bounds[0, 0], bounds[1, 0], 100)
-    x2_range = np.linspace(bounds[0, 1], bounds[1, 1], 100)
+    x1_range = np.linspace(bounds[0][0], bounds[1][0], 100)
+    x2_range = np.linspace(bounds[0][1], bounds[1][1], 100)
     X1, X2 = np.meshgrid(x1_range, x2_range)
-    Z = problem(torch.tensor(np.c_[X1.ravel(), X2.ravel()])).reshape(X1.shape).detach().numpy()
+    Z = np.array([branin(x1, x2) for x1, x2 in zip(X1.ravel(), X2.ravel())]).reshape(X1.shape)
 
     plt.figure(figsize=(8, 6))
     cp = plt.contourf(X1, X2, Z, levels=50, cmap='viridis')
@@ -178,6 +182,7 @@ def plot_contour_with_sampled_points(X_samples, method_name):
     plt.xlabel('x1')
     plt.ylabel('x2')
     plt.legend()
+    plt.savefig(f"{output_dir}/contour_{method_name}.png")
     plt.show()
 
 # Main function to run all methods and compare results
@@ -189,9 +194,9 @@ def main():
 
     # Random Sampling
     print("Running Random Sampling...")
-    X_random, y_random, random_regrets, random_cumulative_regrets = random_sampling(n_iterations, bounds.numpy(), optimal_value)
+    X_random, y_random, random_regrets, random_cumulative_regrets = random_sampling(n_iterations, bounds, optimal_value)
     gp_random = fit_gaussian_process(X_random, y_random)
-    plot_estimated_mean_variance(gp_random, bounds.numpy())
+    plot_estimated_mean_variance(gp_random, bounds, 'Random Sampling')
     plot_regret_cumulative_regret(random_regrets, random_cumulative_regrets, 'Random Sampling')
     plot_contour_with_sampled_points(X_random, 'Random Sampling')
 
@@ -201,7 +206,7 @@ def main():
     model_bayes = SingleTaskGP(train_x, train_y)
     mll = ExactMarginalLogLikelihood(model_bayes.likelihood, model_bayes)
     fit_gpytorch_model(mll)
-    plot_estimated_mean_variance(model_bayes, bounds.numpy())
+    plot_estimated_mean_variance(model_bayes, bounds, 'Bayesian Optimization')
     plot_regret_cumulative_regret(bayesian_regrets, np.cumsum(bayesian_regrets), 'Bayesian Optimization')
     plot_contour_with_sampled_points(train_x.numpy(), 'Bayesian Optimization')
 
@@ -209,7 +214,7 @@ def main():
     print("Running TPE Optimization...")
     X_tpe, y_tpe, tpe_regrets, tpe_cumulative_regrets = tpe_optimization(n_iterations)
     gp_tpe = fit_gaussian_process(X_tpe, y_tpe)
-    plot_estimated_mean_variance(gp_tpe, bounds.numpy())
+    plot_estimated_mean_variance(gp_tpe, bounds, 'TPE Optimization')
     plot_regret_cumulative_regret(tpe_regrets, tpe_cumulative_regrets, 'TPE Optimization')
     plot_contour_with_sampled_points(X_tpe, 'TPE Optimization')
 
