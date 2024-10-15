@@ -64,14 +64,14 @@ def bayesian_optimization(n_iter=20, n_initial_points=5):
 
 # Plotting the true Branin function
 def plot_branin_function(bounds):
-    x1_range = np.linspace(bounds[0][0], bounds[1][0], 100)
-    x2_range = np.linspace(bounds[0][1], bounds[1][1], 100)
-    X1, X2 = np.meshgrid(x1_range, x2_range)
-    X_grid = np.vstack([X1.ravel(), X2.ravel()]).T
-    Z = problem(torch.tensor(X_grid)).reshape(X1.shape).detach().numpy()
+    x1_range = torch.linspace(bounds[0][0], bounds[1][0], 100)
+    x2_range = torch.linspace(bounds[0][1], bounds[1][1], 100)
+    X1, X2 = torch.meshgrid(x1_range, x2_range)
+    X_grid = torch.cat([X1.reshape(-1, 1), X2.reshape(-1, 1)], dim=1)
+    Z = problem(X_grid).reshape(X1.shape).detach().numpy()
 
     plt.figure(figsize=(8, 6))
-    cp = plt.contourf(X1, X2, Z, levels=50, cmap='viridis')
+    cp = plt.contourf(X1.numpy(), X2.numpy(), Z, levels=50, cmap='viridis')
     plt.colorbar(cp, label='Branin function value')
     plt.title('True Branin Function')
     plt.xlabel('x1')
@@ -92,19 +92,18 @@ def plot_estimated_mean_variance(model, bounds):
     pred = pred.reshape(100, 100).detach().numpy()
     variance = variance.reshape(100, 100).detach().numpy()
 
+    # Plot Estimated Mean
     plt.figure(figsize=(10, 8))
-
-    plt.subplot(2, 1, 1)
-    plt.contourf(X1, X2, pred, levels=50, cmap='viridis')
+    plt.contourf(X1.numpy(), X2.numpy(), pred, levels=50, cmap='viridis')
     plt.title('Estimated Mean from GP')
     plt.colorbar()
+    plt.show()
 
-    plt.subplot(2, 1, 2)
-    plt.contourf(X1, X2, variance, levels=50, cmap='viridis')
+    # Plot Estimated Variance
+    plt.figure(figsize=(10, 8))
+    plt.contourf(X1.numpy(), X2.numpy(), variance, levels=50, cmap='viridis')
     plt.title('Estimated Standard Deviation (Variance) from GP')
     plt.colorbar()
-
-    plt.tight_layout()
     plt.show()
 
 # Plot regret and cumulative regret over iterations
@@ -134,14 +133,14 @@ def plot_regret_cumulative_regret(regrets):
 
 # Plot contour with sampled points and optimal point
 def plot_contour_with_sampled_points(train_x, bounds, optimal_point):
-    x1_range = np.linspace(bounds[0][0], bounds[1][0], 100)
-    x2_range = np.linspace(bounds[0][1], bounds[1][1], 100)
-    X1, X2 = np.meshgrid(x1_range, x2_range)
-    X_grid = np.vstack([X1.ravel(), X2.ravel()]).T
-    Z = problem(torch.tensor(X_grid)).reshape(X1.shape).detach().numpy()
+    x1_range = torch.linspace(bounds[0][0], bounds[1][0], 100)
+    x2_range = torch.linspace(bounds[0][1], bounds[1][1], 100)
+    X1, X2 = torch.meshgrid(x1_range, x2_range)
+    X_grid = torch.cat([X1.reshape(-1, 1), X2.reshape(-1, 1)], dim=1)
+    Z = problem(X_grid).reshape(X1.shape).detach().numpy()
 
     plt.figure(figsize=(8, 6))
-    cp = plt.contourf(X1, X2, Z, levels=50, cmap='viridis')
+    cp = plt.contourf(X1.numpy(), X2.numpy(), Z, levels=50, cmap='viridis')
     plt.colorbar(cp, label='Branin function value')
 
     # Scatter the sampled points
