@@ -5,8 +5,8 @@ from botorch.models import SingleTaskGP
 from botorch.fit import fit_gpytorch_model
 from botorch.acquisition import UpperConfidenceBound
 from botorch.optim import optimize_acqf
-from gpytorch.mlls import ExactMarginalLogLikelihood
 from botorch.test_functions import SyntheticTestFunction
+from gpytorch.mlls import ExactMarginalLogLikelihood
 import math
 
 # Custom Branin problem inheriting from SyntheticTestFunction
@@ -46,156 +46,197 @@ class Branin(SyntheticTestFunction):
         t2 = 10 * (1 - 1 / (8 * math.pi)) * torch.cos(X[..., 0])
         return t1.pow(2) + t2 + 10
 
+# Instantiate the Branin function
+problem = Branin(negate=True)  # Set to "negate=True" to treat it as a minimization problem
+bounds = torch.tensor([[-5.0, 0.0], [10.0, 15.0]])  # Bounds for x1 and x2
+optimal_value = 0.397887  # Known global minimum of the Branin function
+optimal_point = torch.tensor([9.42478, 2.475])  # Optimal point for Branin function
 
-# Bayesian Optimization on the Branin problem
-def bayesian_optimization(problem, n_iter=20, n_initial_points=5):
+# Bayesian Optimization function
+def bayesian_optimization(n_iter=20, n_initial_points=5):
     try:
-        # Define bounds
-        bounds = torch.tensor(problem.bounds).T
+        train_x = torch.rand(n_initial_points, 2) * (bounds[1] - bounds[0]) + bounds[0]  # Initial random points
+        train_y = problem(train_x).unsqueeze(-1)  # Initial evaluations of Branin function
         regrets = []
-        cumulative_regrets = []
 
-        # Generate initial random points
-        train_x = torch.rand(n_initial_points, 2) * (bounds[1] - bounds[0]) + bounds[0]
-        train_y = torch.tensor([problem.evaluate_true(x.unsqueeze(0)).item() for x in train_x]).unsqueeze(-1)
+        for i in range(n_iter):
+            # Step 1: Fit the Gaussian Process (GP) model
+            model = SingleTaskGP(train_x, train_y)
+            mll = ExactMarginalLogLikelihood(model.likelihood, model)
+            fit_gpytorch_model(mll)
 
-        # Track regret
-        optimal_value = problem._optimal_value
-        for y in train_y:
-            regret = abs(optimal_value - y.item())
+            # Step 2: Define the acquisition function (Upper Confidence Bound)
+            UCB = UpperConfidenceBound(model, beta=0.1)
+
+            # Step 3: Optimize the acquisition function to get the next candidate point
+            candidate, _ = optimize_acqf(
+                UCB,
+                bounds=bounds,
+                q=1,
+                num_restarts=10,
+                raw_samples=100
+            )
+            
+            # Step 4: Evaluate the Branin function at the candidate point
+            new_x = candidate
+            new_y = problem(new_x).unsqueeze(-1)
+
+            # Step 5: Update the training data
+            train_x = torch.cat([train_x, new_x], dim=0)
+            train_y = torch.cat([train_y, new_y], dim=0)
+
+            # Step 6: Calculate the regret
+            best_value_so_far = train_y.min().item()
+            regret = best_value_so_far - optimal_value
             regrets.append(regret)
-            cumulative_regrets.append(sum(regrets))
 
-        # Train the GP model
-        gp = SingleTaskGP(train_x, train_y)
-        mll = ExactMarginalLogLikelihood(gp.likelihood, gp)
-        fit_gpytorch_model(mll)
+        return train_x, train_y, regrets
 
-        for iteration in range(n_iter):
-            try:
-                # Upper Confidence Bound acquisition function
-                UCB = UpperConfidenceBound(gp, beta=0.1)
-
-                # Optimize the acquisition function
-                candidate, _ = optimize_acqf(
-                    UCB, bounds=bounds, q=1, num_restarts=5, raw_samples=20
-                )
-
-                # Evaluate the candidate
-                new_y = problem.evaluate_true(candidate)
-                train_x = torch.cat([train_x, candidate], dim=0)
-                train_y = torch.cat([train_y, new_y.unsqueeze(-1)], dim=0)
-
-                # Update the model
-                gp.set_train_data(train_x, train_y, strict=False)
-                fit_gpytorch_model(mll)
-
-                # Track regret
-                regret = abs(optimal_value - new_y.item())
-                regrets.append(regret)
-                cumulative_regrets.append(sum(regrets))
-
-            except Exception as e:
-                print(f"Error in iteration {iteration}: {e}")
-                continue
-
-        # Get the best parameters from the search
-        best_params = train_x[train_y.argmin()]
-        return best_params, regrets, cumulative_regrets
     except Exception as e:
         print(f"Error during Bayesian optimization: {e}")
         return None, None, None
 
+# Plot the true Branin function
+def plot_branin_function(bounds):
+    try:
+        x1_range = np.linspace(bounds[0][0].item(), bounds[1][0].item(), 100)
+        x2_range = np.linspace(bounds[0][1].item(), bounds[1][1].item(), 100)
+        X1, X2 = np.meshgrid(x1_range, x2_range)
+        X_grid = np.vstack([X1.ravel(), X2.ravel()]).T
+        Z = problem(torch.tensor(X_grid, dtype=torch.float32)).reshape(X1.shape).detach().numpy()
 
-# Plot the actual Branin function
-def plot_branin():
-    x1 = np.linspace(-5, 10, 200)
-    x2 = np.linspace(0, 15, 200)
-    X1, X2 = np.meshgrid(x1, x2)
-    Z = (X2 - 5.1 * (X1 ** 2) / (4 * np.pi ** 2) + 5 * X1 / np.pi - 6) ** 2 + \
-        10 * (1 - 1 / (8 * np.pi)) * np.cos(X1) + 10
+        plt.figure(figsize=(8, 6))
+        cp = plt.contourf(X1, X2, Z, levels=50, cmap='viridis')
+        plt.colorbar(cp, label='Branin function value')
+        plt.title('True Branin Function')
+        plt.xlabel('x1')
+        plt.ylabel('x2')
+        plt.show()
 
-    plt.figure(figsize=(8, 6))
-    plt.contourf(X1, X2, Z, levels=50, cmap='viridis')
-    plt.colorbar(label='Branin Function Value')
-    plt.title('Branin Function')
-    plt.xlabel('x1')
-    plt.ylabel('x2')
-    plt.show()
+    except Exception as e:
+        print(f"Error in plotting Branin function: {e}")
 
+# Plot estimated mean and variance from the GP model
+def plot_estimated_mean_variance(model, bounds):
+    try:
+        # Create a grid for prediction
+        x1_range = torch.linspace(bounds[0][0].item(), bounds[1][0].item(), 100)
+        x2_range = torch.linspace(bounds[0][1].item(), bounds[1][1].item(), 100)
+        X1, X2 = torch.meshgrid(x1_range, x2_range)
+        X_grid = torch.cat([X1.reshape(-1, 1), X2.reshape(-1, 1)], dim=1)
+
+        # Predict the mean and variance
+        model.eval()
+        with torch.no_grad():
+            y_mean, y_var = model(X_grid).mean, model(X_grid).variance
+            y_mean = y_mean.reshape(X1.shape).detach().numpy()
+            y_std = torch.sqrt(y_var).reshape(X1.shape).detach().numpy()
+
+        # Plot the mean
+        plt.figure(figsize=(8, 6))
+        cp = plt.contourf(X1.numpy(), X2.numpy(), y_mean, levels=50, cmap='coolwarm')
+        plt.colorbar(cp, label='Estimated Mean')
+        plt.title('Estimated Mean from GP')
+        plt.xlabel('x1')
+        plt.ylabel('x2')
+        plt.show()
+
+        # Plot the variance
+        plt.figure(figsize=(8, 6))
+        cp = plt.contourf(X1.numpy(), X2.numpy(), y_std, levels=50, cmap='plasma')
+        plt.colorbar(cp, label='Estimated Standard Deviation')
+        plt.title('Estimated Standard Deviation (Variance) from GP')
+        plt.xlabel('x1')
+        plt.ylabel('x2')
+        plt.show()
+
+    except Exception as e:
+        print(f"Error in plotting estimated mean and variance: {e}")
 
 # Plot regret and cumulative regret
-def plot_regret(regrets, cumulative_regrets):
-    plt.figure(figsize=(12, 5))
+def plot_regret_cumulative_regret(regrets):
+    try:
+        cumulative_regrets = np.cumsum(regrets)
 
-    plt.subplot(1, 2, 1)
-    plt.plot(regrets, label='Regret')
-    plt.xlabel('Iteration')
-    plt.ylabel('Regret')
-    plt.title('Regret over Iterations')
-    plt.grid(True)
-    plt.legend()
+        plt.figure(figsize=(10, 6))
+        
+        # Plot regret
+        plt.subplot(2, 1, 1)
+        plt.plot(regrets, label='Regret')
+        plt.title('Regret per Iteration')
+        plt.xlabel('Iteration')
+        plt.ylabel('Regret')
+        plt.legend()
 
-    plt.subplot(1, 2, 2)
-    plt.plot(cumulative_regrets, label='Cumulative Regret', color='orange')
-    plt.xlabel('Iteration')
-    plt.ylabel('Cumulative Regret')
-    plt.title('Cumulative Regret over Iterations')
-    plt.grid(True)
-    plt.legend()
+        # Plot cumulative regret
+        plt.subplot(2, 1, 2)
+        plt.plot(cumulative_regrets, label='Cumulative Regret', color='orange')
+        plt.title('Cumulative Regret over Iterations')
+        plt.xlabel('Iteration')
+        plt.ylabel('Cumulative Regret')
+        plt.legend()
 
-    plt.tight_layout()
-    plt.show()
+        plt.tight_layout()
+        plt.show()
 
+    except Exception as e:
+        print(f"Error in plotting regret: {e}")
 
-# Plot the contour graph near the optimal point
-def plot_contour_near_optimal(best_params):
-    x1 = np.linspace(best_params[0].item() - 0.5, best_params[0].item() + 0.5, 200)
-    x2 = np.linspace(best_params[1].item() - 0.5, best_params[1].item() + 0.5, 200)
-    X1, X2 = np.meshgrid(x1, x2)
-    Z = (X2 - 5.1 * (X1 ** 2) / (4 * np.pi ** 2) + 5 * X1 / np.pi - 6) ** 2 + \
-        10 * (1 - 1 / (8 * np.pi)) * np.cos(X1) + 10
+# Plot contour with sampled points and optimal point
+def plot_contour_with_sampled_points(train_x, bounds, optimal_point):
+    try:
+        x1_range = np.linspace(bounds[0][0].item(), bounds[1][0].item(), 100)
+        x2_range = np.linspace(bounds[0][1].item(), bounds[1][1].item(), 100)
+        X1, X2 = np.meshgrid(x1_range, x2_range)
+        X_grid = np.vstack([X1.ravel(), X2.ravel()]).T
+        Z = problem(torch.tensor(X_grid, dtype=torch.float32)).reshape(X1.shape).detach().numpy()
 
-    plt.figure(figsize=(8, 6))
-    plt.contourf(X1, X2, Z, levels=50, cmap='coolwarm')
-    plt.colorbar(label='Branin Function Value')
-    plt.plot(best_params[0], best_params[1], 'ro', label='Optimal Point')
-    plt.title('Contour near Optimal Point')
-    plt.xlabel('x1')
-    plt.ylabel('x2')
-    plt.legend()
-    plt.show()
+        plt.figure(figsize=(8, 6))
+        cp = plt.contourf(X1, X2, Z, levels=50, cmap='viridis')
+        plt.colorbar(cp, label='Branin function value')
 
+        # Scatter the sampled points
+        plt.scatter(train_x[:, 0].numpy(), train_x[:, 1].numpy(), color='red', edgecolor='black', label='Sampled Points')
 
-# Main function to run the entire process
+        # Plot the optimal point
+        plt.scatter(optimal_point[0], optimal_point[1], color='yellow', marker='*', s=200, label='Optimal Point')
+
+        plt.title('Contour Plot with Sampled Points and Optimal Point')
+        plt.xlabel('x1')
+        plt.ylabel('x2')
+        plt.legend()
+        plt.show()
+
+    except Exception as e:
+        print(f"Error in plotting contour with sampled points: {e}")
+
+# Main function
 def main():
     try:
-        # Instantiate the Branin problem
-        branin_problem = Branin()
+        n_iterations = 20
 
-        # Run Bayesian optimization
-        best_params, regrets, cumulative_regrets = bayesian_optimization(branin_problem)
+        # Step 1: Plot the true Branin function
+        plot_branin_function(bounds)
 
-        if best_params is not None:
-            # Plot the actual Branin function
-            plot_branin()
+        # Step 2: Bayesian optimization
+        train_x, train_y, regrets = bayesian_optimization(n_iter=n_iterations)
 
-            # Plot regret and cumulative regret
-            plot_regret(regrets, cumulative_regrets)
+        # Step 3: Fit the GP model using the final data
+        model = SingleTaskGP(train_x, train_y)
+        mll = ExactMarginalLogLikelihood(model.likelihood, model)
+        fit_gpytorch_model(mll)
 
-            # Plot the contour graph near the optimal point
-            plot_contour_near_optimal(best_params)
+        # Step 4: Plot estimated mean and variance
+        plot_estimated_mean_variance(model, bounds)
 
-            # Final evaluation with the best parameters
-            final_value = branin_problem.evaluate_true(best_params.unsqueeze(0))
-            print(f"Best Parameters: x1 = {best_params[0].item()}, x2 = {best_params[1].item()}")
-            print(f"Final value at best parameters: {final_value.item()}")
-        else:
-            print("Failed to find the best parameters.")
+        # Step 5: Plot regret and cumulative regret
+        plot_regret_cumulative_regret(regrets)
+
+        # Step 6: Plot contour with sampled points and optimal point
+        plot_contour_with_sampled_points(train_x, bounds, optimal_point)
+
     except Exception as e:
         print(f"Error in main function: {e}")
 
-
-# Run the main function
 if __name__ == "__main__":
     main()
